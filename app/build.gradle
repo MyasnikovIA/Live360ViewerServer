@@ -1,0 +1,44 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'ru.miacomsoft.live360viewerserver'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "ru.miacomsoft.live360viewerserver"
+        minSdk 24
+        targetSdk 34
+        versionCode 1
+        versionName "1.0"
+
+        ndk {
+            abiFilters 'arm64-v8a', 'armeabi-v7a'
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+dependencies {
+    implementation 'androidx.appcompat:appcompat:1.6.1'
+    implementation 'com.google.android.material:material:1.11.0'
+    implementation 'androidx.constraintlayout:constraintlayout:2.1.4'
+
+    // ★ WebRTC (актуальные версии: https://github.com/webrtc-sdk/webrtc)
+    implementation 'io.github.webrtc-sdk:android:125.6422.07'
+
+    // ★ WebSocket-сигналинг
+    implementation 'org.java-websocket:Java-WebSocket:1.5.4'
+}
