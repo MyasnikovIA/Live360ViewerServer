@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>Live360 WebRTC 2D</title>
+    <style>
+        body { background: #111; color: #fff; font-family: sans-serif; text-align: center; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; margin: 0; }
+        video { width: 800px; max-width: 90%; border: 2px solid #333; border-radius: 8px; background: black; }
+        .status { margin-top: 15px; color: #4CAF50; font-size: 18px; font-weight: bold; }
+        .btn { margin-top: 10px; padding: 10px 20px; font-size: 16px; cursor: pointer; background: #6200EE; color: white; border: none; border-radius: 8px; }
+        .btn:hover { background: #3700B3; }
+        #controls { display: flex; gap: 10px; margin-top: 10px; }
+    </style>
+</head>
+<body>
+<video id="video" autoplay playsinline muted></video>
+<div class="status" id="status">Подключение...</div>
+
+<div id="controls">
+    <button id="playBtn" class="btn" style="display:none;">🔊 Включить звук</button>
+    <button id="snapBtn" class="btn" style="display:none;">📷 Снимок</button>
+</div>
+
+<script>
+        const SIGNALING_URL = "ws://" + window.location.hostname + ":9090";
+
+        const video = document.getElementById('video');
+        const statusText = document.getElementById('status');
+        const playBtn = document.getElementById('playBtn');
+        const snapBtn = document.getElementById('snapBtn');
+
+        let pc = null;
+        let remoteStream = null;
+
+        function connect() {
+            const ws = new WebSocket(SIGNALING_URL);
+            ws.onopen = () => { statusText.innerText = "Ожидание WebRTC..."; };
+            ws.onmessage = async (msg) => {
+                const data = JSON.parse(msg.data);
+                if (data.type === 'offer') {
+                    try {
+                        if (!pc) {
+                            pc = new RTCPeerConnection({ iceServers: [{ urls: "stun:stun.l.google.com:19302" }] });
+                            pc.ontrack = (event) => {
+                                if (!remoteStream) {
+                                    remoteStream = event.streams[0];
+                                    video.srcObject = remoteStream;
+                                    video.play().then(() => {
+                                        playBtn.style.display = "block";
+                                        snapBtn.style.display = "block";
+                                        statusText.innerText = "Стрим активен";
+                                    }).catch(() => {
+                                        playBtn.style.display = "block";
+                                        snapBtn.style.display = "block";
+                                    });
+                                }
+                            };
+                            pc.onicecandidate = (e) => {
+                                if (e.candidate) ws.send(JSON.stringify({ type: 'candidate', candidate: e.candidate }));
+                            };
+                            pc.oniceconnectionstatechange = () => {
+                                if (pc.iceConnectionState === 'disconnected') {
+                                    statusText.innerText = "Соединение потеряно";
+                                    statusText.style.color = "red";
+                                }
+                            };
+                        }
+                        // ★ ИСПРАВЛЕНО
+                        await pc.setRemoteDescription({ type: 'offer', sdp: data.sdp });
+                        const answer = await pc.createAnswer();
+                        await pc.setLocalDescription(answer);
+                        ws.send(JSON.stringify({ type: 'answer', sdp: answer.sdp }));
+                    } catch (e) {
+                        statusText.innerText = "Ошибка SDP: " + e.message;
+                        statusText.style.color = "red";
+                    }
+                } else if (data.type === 'candidate') {
+                    if (pc) await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
+                }
+            };
+            ws.onerror = () => { statusText.innerText = "Ошибка подключения"; statusText.style.color = "red"; };
+        }
+
+        playBtn.addEventListener('click', () => {
+            video.muted = false;
+            playBtn.style.display = "none";
+        });
+
+        snapBtn.addEventListener('click', () => {
+            const canvas = document.createElement('canvas');
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+            canvas.getContext('2d').drawImage(video, 0, 0, canvas.width, canvas.height);
+            const a = document.createElement('a');
+            a.href = canvas.toDataURL('image/jpeg');
+            a.download = 'webrtc_2d_' + Date.now() + '.jpg';
+            a.click();
+        });
+
+        connect();
+    </script>
+</body>
+</html>

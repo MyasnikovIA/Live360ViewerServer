@@ -1,12 +1,13 @@
-package ru.miacomsoft.live360viewerserver.stream;
+package ru.miacomsoft.live360viewerserver.webrtc;
 
 import android.util.Log;
-
 import org.java_websocket.WebSocket;
 import org.java_websocket.handshake.ClientHandshake;
 import org.java_websocket.server.WebSocketServer;
-
 import java.net.InetSocketAddress;
+import org.java_websocket.WebSocket;
+import org.java_websocket.handshake.ClientHandshake;
+import org.java_websocket.server.WebSocketServer;
 
 public class SignalingServer extends WebSocketServer {
     private static final String TAG = "SignalingServer";
@@ -21,10 +22,10 @@ public class SignalingServer extends WebSocketServer {
     private final Listener listener;
 
     public SignalingServer(int port, Listener listener) {
-        super(new InetSocketAddress(port));
+        super(new InetSocketAddress("0.0.0.0", port));
         this.port = port;
         this.listener = listener;
-        setReuseAddr(true); // ★ КРИТИЧЕСКИ ВАЖНО: Освобождает порт при крашах
+        setReuseAddr(true);
     }
 
     public int getPort() { return port; }
@@ -42,7 +43,7 @@ public class SignalingServer extends WebSocketServer {
 
     @Override
     public void onClose(WebSocket conn, int code, String reason, boolean remote) {
-        Log.i(TAG, "WebRTC client disconnected");
+        Log.i(TAG, "WebRTC client disconnected: " + conn.getRemoteSocketAddress());
         if (listener != null) listener.onClientDisconnected(conn);
     }
 
@@ -53,6 +54,6 @@ public class SignalingServer extends WebSocketServer {
 
     @Override
     public void onStart() {
-        Log.i(TAG, "WebSocket server started on port " + port);
+        Log.i(TAG, "WebSocket server STARTED on port " + port);
     }
 }

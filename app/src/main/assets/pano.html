@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Pano Viewer — Live360</title>
+    <link rel="stylesheet" href="pannellum.css">
+    <link rel="stylesheet" href="edit.css">
+    <style>
+        html, body { margin: 0; padding: 0; height: 100%; background: #111; color: #eee;
+                     font-family: system-ui, sans-serif; overflow: hidden; }
+        #topbar { padding: 8px 12px; background: #222; display: flex;
+                  gap: 10px; align-items: center; height: 44px; }
+        #topbar a { color: #4CAF50; text-decoration: none; font-weight: bold; }
+        #topbar input { flex: 1; padding: 8px 12px; background: #333; color: #eee;
+                        border: 1px solid #555; border-radius: 4px;
+                        font-family: monospace; }
+        #topbar button { padding: 8px 16px; background: #6200EE; color: white;
+                         border: none; border-radius: 4px; cursor: pointer; }
+        #topbar button:hover { background: #3700B3; }
+        #pano { width: 100vw; height: calc(100vh - 44px); }
+        .error { padding: 20px; color: #f44; font-family: monospace; }
+    </style>
+</head>
+<body>
+<div id="topbar">
+    <a href="index.html">← Назад</a>
+    <input id="imgUrl" type="text"
+           placeholder="URL панорамы (напр. panoramas/pano1.jpg)">
+    <button onclick="loadPano()">Загрузить</button>
+</div>
+<div id="pano"></div>
+
+<script src="libpannellum.js"></script>
+<script src="pannellum.js"></script>
+<script>
+        let viewer = null;
+
+        function loadPano() {
+            const url = document.getElementById('imgUrl').value.trim();
+            if (!url) { alert('Введите URL панорамы'); return; }
+
+            if (viewer) {
+                try { viewer.destroy(); } catch (e) {}
+                viewer = null;
+            }
+            document.getElementById('pano').innerHTML = '';
+
+            if (typeof pannellum === 'undefined' || !pannellum.viewer) {
+                document.getElementById('pano').innerHTML =
+                    '<div class="error">' +
+                    '⚠ pannellum.js не загружен или не экспортирует pannellum.viewer()<br>' +
+                    'Проверьте, что pannellum.js и libpannellum.js лежат в assets/. ' +
+                    'Если используется другая версия — замените скрипт.' +
+                    '</div>';
+                return;
+            }
+
+            try {
+                viewer = pannellum.viewer('pano', {
+                    type: 'equirectangular',
+                    panorama: url,
+                    autoLoad: true,
+                    showControls: true,
+                    hfov: 100,
+                    pitch: 0,
+                    yaw: 0,
+                    strings: {
+                        loadingLabel: 'Загрузка панорамы…',
+                        noPanoramaError: 'Панорама не указана.'
+                    }
+                });
+            } catch (e) {
+                document.getElementById('pano').innerHTML =
+                    '<div class="error">Ошибка инициализации: ' + e.message + '</div>';
+            }
+        }
+
+        // Автозагрузка из ?img=...
+        const p = new URLSearchParams(location.search);
+        const img = p.get('img');
+        if (img) {
+            document.getElementById('imgUrl').value = img;
+            setTimeout(loadPano, 100);
+        }
+    </script>
+</body>
+</html>

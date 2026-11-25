@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string-array name="video_res_labels">
+        <item>640×320 (0x07)</item>
+        <item>960×480 (0x08)</item>
+        <item>1024×512 (0x09)</item>
+        <item>1280×640 (0x0A) ★</item>
+        <item>1920×960 (0x0B)</item>
+    </string-array>
+    <string-array name="video_res_values">
+        <item>7</item>
+        <item>8</item>
+        <item>9</item>
+        <item>10</item>
+        <item>11</item>
+    </string-array>
+
+    <string-array name="photo_res_labels">
+        <item>5 МП (0x03)</item>
+        <item>13 МП (0x04)</item>
+    </string-array>
+    <string-array name="photo_res_values">
+        <item>3</item>
+        <item>4</item>
+    </string-array>
+</resources>

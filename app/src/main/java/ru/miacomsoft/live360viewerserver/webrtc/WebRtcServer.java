@@ -21,7 +21,6 @@ import org.webrtc.MediaStream;
 import org.webrtc.PeerConnection;
 import org.webrtc.PeerConnectionFactory;
 import org.webrtc.RtpReceiver;
-import org.webrtc.RtpSender;
 import org.webrtc.SdpObserver;
 import org.webrtc.SessionDescription;
 import org.webrtc.SurfaceTextureHelper;
@@ -32,10 +31,10 @@ import org.webrtc.audio.JavaAudioDeviceModule;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-
-import ru.miacomsoft.live360viewerserver.stream.SignalingServer;
 
 public class WebRtcServer implements SignalingServer.Listener {
 
@@ -61,22 +60,30 @@ public class WebRtcServer implements SignalingServer.Listener {
     private AudioSource audioSource;
     private AudioTrack  audioTrack;
 
-    private PeerConnection peerConnection;
-    private org.java_websocket.WebSocket clientConnection;
-
+    private final Map<org.java_websocket.WebSocket, PeerConnection> peerConnections = new ConcurrentHashMap<>();
     private final ExecutorService wsExecutor = Executors.newSingleThreadExecutor();
+
     private volatile boolean started = false;
+    private volatile boolean webRtcReady = false;
 
     public WebRtcServer(Context ctx, int signalingPort) {
         this.context = ctx.getApplicationContext();
         this.signaling = new SignalingServer(signalingPort, this);
     }
 
-    // ============ Lifecycle ============
-
     public synchronized void start() {
         if (started) return;
+        started = true;
+
         try {
+            signaling.start();
+            Log.i(TAG, "Signaling server start() called");
+        } catch (Exception e) {
+            Log.e(TAG, "Signaling server FAILED to start", e);
+        }
+
+        try {
+            Log.i(TAG, "Initializing WebRTC...");
             PeerConnectionFactory.initialize(
                     PeerConnectionFactory.InitializationOptions.builder(context)
                             .setEnableInternalTracer(false)
@@ -88,15 +95,13 @@ public class WebRtcServer implements SignalingServer.Listener {
 
             if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO)
                     != PackageManager.PERMISSION_GRANTED) {
-                Log.w(TAG, "RECORD_AUDIO не выдан — только видео");
+                Log.w(TAG, "RECORD_AUDIO не выдан — стрим пойдёт только с видео");
             }
 
             audioDeviceModule = JavaAudioDeviceModule.builder(context)
                     .setAudioSource(MediaRecorder.AudioSource.MIC)
                     .setUseHardwareAcousticEchoCanceler(false)
                     .setUseHardwareNoiseSuppressor(false)
-                    .setUseStereoInput(false)
-                    .setUseStereoOutput(false)
                     .createAudioDeviceModule();
 
             factory = PeerConnectionFactory.builder()
@@ -104,22 +109,26 @@ public class WebRtcServer implements SignalingServer.Listener {
                     .setAudioDeviceModule(audioDeviceModule)
                     .createPeerConnectionFactory();
 
-            createVideoTrack();   // ★ СРАЗУ — не лениво
+            createVideoTrack();
             createAudioTrack();
 
-            signaling.start();
-            started = true;
-            Log.i(TAG, "started, signaling on port " + signaling.getPort());
-        } catch (Exception e) {
-            Log.e(TAG, "start failed", e);
+            webRtcReady = true;
+            Log.i(TAG, "WebRTC initialized successfully");
+        } catch (Throwable e) {
+            Log.e(TAG, "CRITICAL: WebRTC initialization FAILED.", e);
         }
     }
 
     public synchronized void stop() {
         if (!started) return;
         started = false;
+        webRtcReady = false;
 
-        closePeerConnection();
+        for (PeerConnection pc : peerConnections.values()) {
+            try { pc.close(); } catch (Exception ignored) {}
+        }
+        peerConnections.clear();
+
         if (audioTrack  != null) { audioTrack.dispose();  audioTrack = null; }
         if (audioSource != null) { audioSource.dispose(); audioSource = null; }
         if (videoTrack  != null) { videoTrack.dispose();  videoTrack = null; }
@@ -129,18 +138,13 @@ public class WebRtcServer implements SignalingServer.Listener {
         if (audioDeviceModule != null) { audioDeviceModule.release(); audioDeviceModule = null; }
         if (eglBase     != null) { eglBase.release();     eglBase = null; }
 
-        try { signaling.stop(); }
-        catch (InterruptedException e) { Log.w(TAG, "signaling.stop: " + e.getMessage()); }
+        try { signaling.stop(); } catch (InterruptedException e) { Log.w(TAG, e.getMessage()); }
         wsExecutor.shutdown();
-        Log.i(TAG, "stopped");
+        Log.i(TAG, "WebRtcServer stopped");
     }
 
-    // ============ Треки ============
-
     private void createVideoTrack() {
-        SurfaceTextureHelper helper = SurfaceTextureHelper.create(
-                "CaptureThread", eglBase.getEglBaseContext());
-
+        SurfaceTextureHelper helper = SurfaceTextureHelper.create("CaptureThread", eglBase.getEglBaseContext());
         videoCapturer = new SurfaceTextureCapturer();
         videoSource = factory.createVideoSource(false);
         videoCapturer.initialize(helper, context, videoSource.getCapturerObserver());
@@ -148,40 +152,47 @@ public class WebRtcServer implements SignalingServer.Listener {
 
         videoTrack = factory.createVideoTrack(VIDEO_TRACK_ID, videoSource);
         videoTrack.setEnabled(true);
-        Log.i(TAG, "videoTrack " + VIDEO_WIDTH + "x" + VIDEO_HEIGHT + "@" + VIDEO_FPS);
+        Log.i(TAG, "videoTrack created " + VIDEO_WIDTH + "x" + VIDEO_HEIGHT + "@" + VIDEO_FPS);
     }
 
     private void createAudioTrack() {
         MediaConstraints c = new MediaConstraints();
         c.mandatory.add(new MediaConstraints.KeyValuePair("googEchoCancellation", "false"));
-        c.mandatory.add(new MediaConstraints.KeyValuePair("googAutoGainControl",   "false"));
-        c.mandatory.add(new MediaConstraints.KeyValuePair("googNoiseSuppression",  "false"));
-        c.mandatory.add(new MediaConstraints.KeyValuePair("googHighpassFilter",    "false"));
+        c.mandatory.add(new MediaConstraints.KeyValuePair("googAutoGainControl", "false"));
+        c.mandatory.add(new MediaConstraints.KeyValuePair("googNoiseSuppression", "false"));
+        c.mandatory.add(new MediaConstraints.KeyValuePair("googHighpassFilter", "false"));
 
         audioSource = factory.createAudioSource(c);
         audioTrack = factory.createAudioTrack(AUDIO_TRACK_ID, audioSource);
         audioTrack.setEnabled(true);
-        Log.i(TAG, "audioTrack");
+        Log.i(TAG, "audioTrack created");
     }
 
-    /** ★ Surface, в который рендерит H264Decoder. Готов сразу после start(). */
     public Surface getCaptureSurface() {
         return videoCapturer != null ? videoCapturer.getSurface() : null;
     }
 
     public void updateVideoResolution(int w, int h) {
-        if (videoCapturer != null) videoCapturer.changeCaptureFormat(w, h, VIDEO_FPS);
+        if (videoCapturer != null) {
+            Log.i(TAG, "updateVideoResolution: " + w + "x" + h);
+            videoCapturer.changeCaptureFormat(w, h, VIDEO_FPS);
+        }
     }
-
-    // ============ SignalingServer.Listener ============
 
     @Override
     public void onClientConnected(org.java_websocket.WebSocket conn) {
-        Log.i(TAG, "browser connected: " + conn.getRemoteSocketAddress());
-        this.clientConnection = conn;
-        closePeerConnection();   // ★ закрываем старый PC
-        createPeerConnection();
-        createOffer();
+        if (!webRtcReady) {
+            Log.e(TAG, "Client connected, but WebRTC failed to initialize!");
+            try {
+                JSONObject err = new JSONObject();
+                err.put("type", "error");
+                err.put("message", "WebRTC initialization failed on device.");
+                conn.send(err.toString());
+            } catch (Exception ignored) {}
+            return;
+        }
+        Log.i(TAG, "Browser connected: " + conn.getRemoteSocketAddress());
+        createPeerConnectionFor(conn);
     }
 
     @Override
@@ -189,20 +200,18 @@ public class WebRtcServer implements SignalingServer.Listener {
         try {
             JSONObject json = new JSONObject(message);
             String type = json.getString("type");
-            PeerConnection pc = peerConnection;
+            PeerConnection pc = peerConnections.get(conn);
             if (pc == null) return;
 
             if ("answer".equals(type)) {
                 pc.setRemoteDescription(new SimpleSdpObserver(),
-                        new SessionDescription(SessionDescription.Type.ANSWER,
-                                json.getString("sdp")));
+                        new SessionDescription(SessionDescription.Type.ANSWER, json.getString("sdp")));
             } else if ("candidate".equals(type)) {
                 JSONObject c = json.getJSONObject("candidate");
                 String mid  = c.optString("sdpMid", null);
                 String cand = c.optString("candidate", null);
                 if (mid != null && cand != null) {
-                    pc.addIceCandidate(new IceCandidate(mid,
-                            c.optInt("sdpMLineIndex", 0), cand));
+                    pc.addIceCandidate(new IceCandidate(mid, c.optInt("sdpMLineIndex", 0), cand));
                 }
             }
         } catch (Exception e) {
@@ -212,21 +221,21 @@ public class WebRtcServer implements SignalingServer.Listener {
 
     @Override
     public void onClientDisconnected(org.java_websocket.WebSocket conn) {
-        Log.i(TAG, "browser disconnected");
-        clientConnection = null;
-        closePeerConnection();
+        Log.i(TAG, "Browser disconnected: " + conn.getRemoteSocketAddress());
+        PeerConnection pc = peerConnections.remove(conn);
+        if (pc != null) {
+            try { pc.close(); } catch (Exception ignored) {}
+        }
     }
 
-    // ============ PeerConnection ============
-
-    private void createPeerConnection() {
+    private void createPeerConnectionFor(final org.java_websocket.WebSocket conn) {
         List<PeerConnection.IceServer> ice = new ArrayList<>();
         ice.add(PeerConnection.IceServer.builder("stun:stun.l.google.com:19302").createIceServer());
 
         PeerConnection.RTCConfiguration cfg = new PeerConnection.RTCConfiguration(ice);
         cfg.sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN;
 
-        peerConnection = factory.createPeerConnection(cfg, new PeerConnection.Observer() {
+        PeerConnection pc = factory.createPeerConnection(cfg, new PeerConnection.Observer() {
             @Override public void onIceCandidate(IceCandidate c) {
                 try {
                     JSONObject cand = new JSONObject();
@@ -236,13 +245,13 @@ public class WebRtcServer implements SignalingServer.Listener {
                     JSONObject msg = new JSONObject();
                     msg.put("type", "candidate");
                     msg.put("candidate", cand);
-                    send(msg.toString());
+                    sendTo(conn, msg.toString());
                 } catch (Exception ignored) {}
             }
-            @Override public void onSignalingChange(PeerConnection.SignalingState s) {}
             @Override public void onIceConnectionChange(PeerConnection.IceConnectionState s) {
-                Log.i(TAG, "ICE: " + s);
+                Log.i(TAG, "ICE [" + conn.getRemoteSocketAddress() + "]: " + s);
             }
+            @Override public void onSignalingChange(PeerConnection.SignalingState s) {}
             @Override public void onIceConnectionReceivingChange(boolean b) {}
             @Override public void onIceGatheringChange(PeerConnection.IceGatheringState s) {}
             @Override public void onIceCandidatesRemoved(IceCandidate[] c) {}
@@ -253,23 +262,20 @@ public class WebRtcServer implements SignalingServer.Listener {
             @Override public void onAddTrack(RtpReceiver r, MediaStream[] ms) {}
         });
 
-        if (peerConnection == null) {
-            Log.e(TAG, "createPeerConnection failed");
+        if (pc == null) {
+            Log.e(TAG, "createPeerConnection returned NULL");
             return;
         }
-        if (videoTrack != null) {
-            RtpSender s = peerConnection.addTrack(videoTrack, Collections.singletonList(STREAM_ID));
-            Log.i(TAG, "videoTrack added: " + (s != null));
-        }
-        if (audioTrack != null) {
-            RtpSender s = peerConnection.addTrack(audioTrack, Collections.singletonList(STREAM_ID));
-            Log.i(TAG, "audioTrack added: " + (s != null));
-        }
+
+        peerConnections.put(conn, pc);
+
+        if (videoTrack != null) pc.addTrack(videoTrack, Collections.singletonList(STREAM_ID));
+        if (audioTrack != null) pc.addTrack(audioTrack, Collections.singletonList(STREAM_ID));
+
+        createOfferFor(conn, pc);
     }
 
-    private void createOffer() {
-        PeerConnection pc = peerConnection;
-        if (pc == null) return;
+    private void createOfferFor(final org.java_websocket.WebSocket conn, final PeerConnection pc) {
         MediaConstraints c = new MediaConstraints();
         c.mandatory.add(new MediaConstraints.KeyValuePair("OfferToReceiveVideo", "false"));
         c.mandatory.add(new MediaConstraints.KeyValuePair("OfferToReceiveAudio", "false"));
@@ -281,23 +287,18 @@ public class WebRtcServer implements SignalingServer.Listener {
                     JSONObject msg = new JSONObject();
                     msg.put("type", "offer");
                     msg.put("sdp", sdp.description);
-                    send(msg.toString());
+                    sendTo(conn, msg.toString());
                 } catch (Exception ignored) {}
             }
         }, c);
     }
 
-    private void closePeerConnection() {
-        PeerConnection pc = peerConnection;
-        peerConnection = null;
-        if (pc != null) { try { pc.close(); } catch (Exception ignored) {} }
-    }
-
-    private void send(String text) {
-        wsExecutor.execute(() -> {
-            org.java_websocket.WebSocket c = clientConnection;
-            if (c != null) { try { c.send(text); } catch (Exception ignored) {} }
-        });
+    private void sendTo(org.java_websocket.WebSocket conn, String text) {
+        if (conn != null && conn.isOpen()) {
+            wsExecutor.execute(() -> {
+                try { conn.send(text); } catch (Exception ignored) {}
+            });
+        }
     }
 
     private static class SimpleSdpObserver implements SdpObserver {

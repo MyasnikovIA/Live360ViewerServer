@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Live360 Server</title>
+    <style>
+        * { box-sizing: border-box; }
+        body { background: #111; color: #eee; font-family: system-ui, sans-serif; margin: 0; padding: 20px; max-width: 900px; }
+        h1 { color: #4CAF50; margin: 0 0 8px; }
+        h2 { color: #aaa; font-size: 14px; margin-top: 24px; text-transform: uppercase; border-bottom: 1px solid #333; padding-bottom: 4px; }
+        button { background: #6200EE; color: white; border: none; padding: 10px 20px; margin: 4px 4px 4px 0; border-radius: 6px; cursor: pointer; font-size: 14px; }
+        button:hover { background: #3700B3; }
+        input, select { background: #222; color: #eee; border: 1px solid #444; padding: 8px 12px; border-radius: 4px; font-family: monospace; font-size: 14px; }
+        select { width: 200px; }
+        .log { background: #000; color: #0f0; font-family: monospace; padding: 10px; height: 200px; overflow: auto; border-radius: 6px; white-space: pre-wrap; font-size: 12px; margin-top: 12px; }
+        .status-box { background: #222; padding: 14px; border-radius: 6px; margin: 10px 0; font-family: monospace; font-size: 13px; line-height: 1.8; }
+        .badge { display: inline-block; padding: 2px 10px; border-radius: 4px; font-size: 12px; font-weight: bold; }
+        .badge-on { background: #4CAF50; color: #000; }
+        .badge-off { background: #f44336; color: #fff; }
+        .row { margin-bottom: 10px; display: flex; gap: 10px; align-items: center; }
+        .files-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 6px; margin-top: 8px; }
+        .file-link { background: #222; padding: 8px 12px; border-radius: 4px; color: #4CAF50; text-decoration: none; font-family: monospace; font-size: 13px; word-break: break-all; display: block; }
+        .file-link:hover { background: #333; }
+        .file-link.html { color: #FFC107; font-weight: bold; }
+    </style>
+</head>
+<body>
+<h1>📷 Live360 Server</h1>
+<div class="status-box" id="status">Загрузка...</div>
+
+<h2>Управление</h2>
+<div>
+    <button onclick="cmd('start_stream')" id="btnStart">▶ Старт стрима</button>
+    <button onclick="cmd('stop_stream')"  id="btnStop">■ Стоп стрима</button>
+    <button onclick="takeAndroidPhoto()">📷 Снимок (Android Camera)</button>
+</div>
+
+<h2>Разрешения</h2>
+<div class="row">
+    Video res:
+    <select id="videoRes">
+        <option value="7">640×320 (0x07)</option>
+        <option value="8">960×480 (0x08)</option>
+        <option value="9">1024×512 (0x09)</option>
+        <option value="10" selected>1280×640 (0x0A) ★</option>
+        <option value="11">1920×960 (0x0B)</option>
+    </select>
+</div>
+<div class="row">
+    Photo res:
+    <select id="photoRes">
+        <option value="3" selected>5 МП (0x03)</option>
+        <option value="4">13 МП (0x04)</option>
+    </select>
+</div>
+
+<h2>Веб-сервер</h2>
+<div class="row">
+    Порт: <input id="portInput" type="number" min="1024" max="65535" size="8"/>
+    <button onclick="changePort()">Сменить порт</button>
+</div>
+
+<h2>Файлы в assets</h2>
+<div id="filesList" class="files-list">Загрузка...</div>
+
+<h2>Журнал</h2>
+<div class="log" id="log"></div>
+
+<script>
+        const log = document.getElementById('log');
+        const statusEl = document.getElementById('status');
+        const portInput = document.getElementById('portInput');
+        const filesEl = document.getElementById('filesList');
+        const videoResSelect = document.getElementById('videoRes');
+        const photoResSelect = document.getElementById('photoRes');
+
+        function addLog(s) { log.textContent += s + '\n'; log.scrollTop = log.scrollHeight; }
+
+        function renderStatus(s) {
+            statusEl.innerHTML =
+                'Streaming: <span class="badge ' + (s.streaming ? 'badge-on' : 'badge-off') + '">' + (s.streaming ? 'ON' : 'OFF') + '</span><br>'
+                + 'IP: ' + s.ip + ' | Web: ' + s.webPort + ' | Signaling: ' + s.signalingPort;
+            if (s.webPort && !portInput.value) portInput.value = s.webPort;
+            if (s.videoRes) videoResSelect.value = s.videoRes;
+            if (s.photoRes) photoResSelect.value = s.photoRes;
+        }
+
+        async function cmd(name, payload = {}) {
+            addLog('→ ' + name);
+            try {
+                const r = await fetch('/api/command', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({cmd: name, payload})
+                });
+                const j = await r.json();
+                addLog('← ' + JSON.stringify(j).substring(0, 100));
+                return j;
+            } catch (e) { addLog('ERR: ' + e.message); return null; }
+        }
+
+        async function takeAndroidPhoto() {
+            addLog('📷 Запрос снимка с камеры Android...');
+            const j = await cmd('take_photo');
+            if (j && j.ok && j.image_base64) {
+                const a = document.createElement('a');
+                a.href = 'data:image/jpeg;base64,' + j.image_base64;
+                a.download = 'android_snap_' + Date.now() + '.jpg';
+                a.click();
+                addLog('✅ Снимок сохранен');
+            } else {
+                addLog('❌ Ошибка снимка: ' + (j ? j.error : 'нет ответа'));
+            }
+        }
+
+        videoResSelect.addEventListener('change', () => {
+            cmd('set_video_res', { code: parseInt(videoResSelect.value) });
+        });
+
+        photoResSelect.addEventListener('change', () => {
+            cmd('set_photo_res', { code: parseInt(photoResSelect.value) });
+        });
+
+        async function changePort() {
+            const port = parseInt(portInput.value);
+            if (isNaN(port) || port < 1024 || port > 65535) { alert('Порт 1024-65535'); return; }
+            const j = await cmd('set_web_port', { port });
+            if (j && j.ok) {
+                const newUrl = j.url || ('http://' + location.hostname + ':' + port + '/');
+                document.body.innerHTML = `<div style="text-align:center;padding:60px;color:#eee;">
+                    <h1 style="color:#4CAF50;">✓ Сервер на новом порту</h1>
+                    <p>Перейдите по ссылке: <a href="${newUrl}" style="color:#4CAF50;">${newUrl}</a></p></div>`;
+            }
+        }
+
+        async function loadFiles() {
+            try {
+                const r = await fetch('/api/files');
+                const j = await r.json();
+                const files = j.files || [];
+                filesEl.innerHTML = '';
+                files.sort().forEach(f => {
+                    const a = document.createElement('a');
+                    a.className = 'file-link' + (f.endsWith('.html') ? ' html' : '');
+                    a.href = f;
+                    a.target = '_blank';
+                    a.textContent = f;
+                    filesEl.appendChild(a);
+                });
+            } catch (e) { filesEl.textContent = 'Ошибка: ' + e.message; }
+        }
+
+        const es = new EventSource('/api/events');
+        es.addEventListener('status', e => renderStatus(JSON.parse(e.data)));
+        es.addEventListener('command', e => addLog('📢 ' + e.data));
+        es.addEventListener('server_moved', e => {
+            const d = JSON.parse(e.data);
+            document.body.innerHTML = `<div style="text-align:center;padding:60px;color:#eee;">
+                <h1 style="color:#FF9800;">⚠ Сервер переехал</h1>
+                <p><a href="${d.newUrl}" style="color:#4CAF50;">${d.newUrl}</a></p></div>`;
+        });
+        es.onerror = () => addLog('⚠ SSE disconnected');
+
+        loadFiles();
+    </script>
+</body>
+</html>

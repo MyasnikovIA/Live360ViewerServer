@@ -1,3 +1,4 @@
 <resources>
-    <string name="app_name">Live360ViewerServer</string>
+    <string name="app_name">Live360 Server</string>
+    <string name="accessibility_desc">Автоматически подтверждает доступ к USB-камере после перезагрузки.</string>
 </resources>

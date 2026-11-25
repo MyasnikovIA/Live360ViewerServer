@@ -19,14 +19,15 @@ public class UsbCameraManager {
 
     private static final String TAG = "UsbCamera";
     private static final String ACTION_USB_PERMISSION =
-            "ru.miacomsoft.live360viewer.USB_PERMISSION";
+            "ru.miacomsoft.live360viewerserver.USB_PERMISSION";
 
     public interface Listener {
-        void onConnected(UsbDeviceConnection conn, UsbInterface intf,
-                         UsbEndpoint epIn, UsbEndpoint epOut);
+        void onConnected(UsbDeviceConnection conn, UsbInterface intf, UsbEndpoint epIn, UsbEndpoint epOut);
         void onDetached();
         void onPermissionDenied();
         void onError(String msg);
+        // ★ НОВЫЙ МЕТОД: Уведомляет UI, что нужно ждать ответа на диалог
+        void onPermissionRequested();
     }
 
     private final Context ctx;
@@ -47,8 +48,7 @@ public class UsbCameraManager {
         @Override public void onReceive(Context context, Intent intent) {
             String a = intent.getAction();
             if (ACTION_USB_PERMISSION.equals(a)) {
-                boolean ok = intent.getBooleanExtra(
-                        UsbManager.EXTRA_PERMISSION_GRANTED, false);
+                boolean ok = intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false);
                 if (ok) openDevice();
                 else if (listener != null) listener.onPermissionDenied();
             } else if (UsbManager.ACTION_USB_DEVICE_DETACHED.equals(a)) {
@@ -56,6 +56,13 @@ public class UsbCameraManager {
                 if (d != null && d.equals(device)) {
                     close();
                     if (listener != null) listener.onDetached();
+                }
+            } else if (UsbManager.ACTION_USB_DEVICE_ATTACHED.equals(a)) {
+                UsbDevice d = intent.getParcelableExtra(UsbManager.EXTRA_DEVICE);
+                if (d != null && d.getVendorId() == ScsiConstants.VENDOR_ID
+                        && d.getProductId() == ScsiConstants.PRODUCT_ID) {
+                    Log.i(TAG, "USB camera re-attached, retrying start");
+                    start(listener);
                 }
             }
         }
@@ -65,20 +72,18 @@ public class UsbCameraManager {
         this.listener = l;
         this.usbManager = (UsbManager) ctx.getSystemService(Context.USB_SERVICE);
 
-        // ★ Регистрируем receiver один раз
         if (!registered) {
             int flags = PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT;
-            permIntent = PendingIntent.getBroadcast(
-                    ctx, 0, new Intent(ACTION_USB_PERMISSION), flags);
+            permIntent = PendingIntent.getBroadcast(ctx, 0, new Intent(ACTION_USB_PERMISSION), flags);
 
             IntentFilter f = new IntentFilter();
             f.addAction(ACTION_USB_PERMISSION);
             f.addAction(UsbManager.ACTION_USB_DEVICE_DETACHED);
+            f.addAction(UsbManager.ACTION_USB_DEVICE_ATTACHED);
             ctx.registerReceiver(receiver, f);
             registered = true;
         }
 
-        // ★ Если предыдущее соединение осталось — освободить
         if (connection != null) {
             Log.i(TAG, "start: closing previous connection");
             close();
@@ -89,17 +94,21 @@ public class UsbCameraManager {
             if (listener != null) listener.onError("Camera not found");
             return;
         }
+
         if (usbManager.hasPermission(device)) {
+            Log.i(TAG, "USB permission already granted");
             openDevice();
         } else {
+            Log.i(TAG, "Requesting USB permission...");
+            if (listener != null) listener.onPermissionRequested();
             usbManager.requestPermission(device, permIntent);
         }
     }
 
     private UsbDevice findCamera() {
+        if (usbManager == null) return null;
         HashMap<String, UsbDevice> list = usbManager.getDeviceList();
         for (UsbDevice d : list.values()) {
-            Log.d(TAG, "USB vid=" + d.getVendorId() + " pid=" + d.getProductId());
             if (d.getVendorId() == ScsiConstants.VENDOR_ID
                     && d.getProductId() == ScsiConstants.PRODUCT_ID) {
                 return d;
@@ -111,6 +120,7 @@ public class UsbCameraManager {
     private void openDevice() {
         if (device == null) return;
         intf = null; epIn = null; epOut = null;
+
         for (int i = 0; i < device.getInterfaceCount(); i++) {
             UsbInterface it = device.getInterface(i);
             UsbEndpoint iIn = null, iOut = null;
@@ -134,7 +144,7 @@ public class UsbCameraManager {
             if (listener != null) listener.onError("claimInterface failed");
             return;
         }
-        Log.i(TAG, "USB connected, epIn=" + epIn + " epOut=" + epOut);
+        Log.i(TAG, "USB connected successfully");
         if (listener != null) listener.onConnected(connection, intf, epIn, epOut);
     }
 
