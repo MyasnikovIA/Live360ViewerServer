@@ -46,20 +46,20 @@ import ru.miacomsoft.live360viewerserver.settings.PhotoSettings;
 import ru.miacomsoft.live360viewerserver.usb.LiveViewSession;
 import ru.miacomsoft.live360viewerserver.usb.ScsiConstants;
 import ru.miacomsoft.live360viewerserver.usb.UsbCameraManager;
-import ru.miacomsoft.live360viewerserver.web.WebServer;
+// ★ ИЗМЕНЕНО: Используем новый WebServerManager
+import ru.miacomsoft.live360viewerserver.web.WebServerManager;
 import ru.miacomsoft.live360viewerserver.webrtc.WebRtcServer;
 
-public class MainActivity extends AppCompatActivity implements WebServer.CommandHandler {
+public class MainActivity extends AppCompatActivity implements WebServerManager.CommandHandler {
 
     private static final String TAG = "MainActivity";
     private static final int REQ_PERMISSIONS = 100;
     private static final int SIGNALING_PORT  = 9090;
     private static final int DEFAULT_WEB_PORT = 8080;
 
-    // ★ НАСТРОЙКИ ПОВТОРНЫХ ПОПЫТОК
-    private static final int MAX_BOOT_RETRIES = 3;          // Максимум попыток
-    private static final long RETRY_DELAY_MS = 10000L;      // 10 секунд между попытками
-    private static final long CONNECT_TIMEOUT_MS = 15000L;  // 15 секунд ожидания ответа от камеры
+    private static final int MAX_BOOT_RETRIES = 3;
+    private static final long RETRY_DELAY_MS = 10000L;
+    private static final long CONNECT_TIMEOUT_MS = 15000L;
 
     private static final String PREF = "app_prefs";
     private static final String KEY_WEB_PORT   = "web_port";
@@ -71,7 +71,7 @@ public class MainActivity extends AppCompatActivity implements WebServer.Command
     private Spinner spinnerVideo, spinnerPhoto;
 
     private WebRtcServer webRtc;
-    private WebServer   webServer;
+    private WebServerManager webServer; // ★ ИЗМЕНЕНО
     private UsbCameraManager usb;
     private LiveViewSession  session;
     private H264Decoder      decoder;
@@ -84,7 +84,6 @@ public class MainActivity extends AppCompatActivity implements WebServer.Command
 
     private boolean isUpdatingSpinners = false;
 
-    // ★ Механизмы таймаутов и повторных попыток
     private int bootRetryCount = 0;
     private final Handler retryHandler = new Handler(Looper.getMainLooper());
     private Runnable retryRunnable;
@@ -128,7 +127,6 @@ public class MainActivity extends AppCompatActivity implements WebServer.Command
         });
 
         btnStop.setEnabled(false);
-
         setupSpinners();
 
         int saved = getSharedPreferences(PREF, MODE_PRIVATE).getInt(KEY_WEB_PORT, DEFAULT_WEB_PORT);
@@ -140,7 +138,8 @@ public class MainActivity extends AppCompatActivity implements WebServer.Command
             localIp = fetchLocalIp();
             runOnUiThread(MainActivity.this::updateIpInfo);
 
-            webServer = new WebServer(MainActivity.this, webPort, MainActivity.this);
+            // ★ ИЗМЕНЕНО: Используем WebServerManager
+            webServer = new WebServerManager(MainActivity.this, webPort, MainActivity.this);
             if (!webServer.start()) {
                 runOnUiThread(() -> {
                     webServer = null;
@@ -153,7 +152,6 @@ public class MainActivity extends AppCompatActivity implements WebServer.Command
             runOnUiThread(MainActivity.this::updateIpInfo);
         }).start();
 
-        // ★ ВОССТАНОВЛЕНИЕ ПОСЛЕ ПЕРЕЗАГРУЗКИ
         boolean wasActive = getSharedPreferences(PREF, MODE_PRIVATE).getBoolean(KEY_STREAM_ACTIVE, false);
         if (wasActive) {
             Log.i(TAG, "Auto-start: resuming stream...");
@@ -165,6 +163,8 @@ public class MainActivity extends AppCompatActivity implements WebServer.Command
         }
     }
 
+    // ... (Остальные методы остаются без изменений вплоть до changeWebPort) ...
+
     @Override
     protected void onResume() {
         super.onResume();
@@ -175,12 +175,10 @@ public class MainActivity extends AppCompatActivity implements WebServer.Command
         String expectedComponentName = getPackageName() + "/" + UsbPermissionService.class.getName();
         String enabledServices = Settings.Secure.getString(getContentResolver(), Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES);
         if (TextUtils.isEmpty(enabledServices)) return false;
-
         TextUtils.SimpleStringSplitter splitter = new TextUtils.SimpleStringSplitter(':');
         splitter.setString(enabledServices);
         while (splitter.hasNext()) {
-            String service = splitter.next();
-            if (service.equalsIgnoreCase(expectedComponentName)) return true;
+            if (splitter.next().equalsIgnoreCase(expectedComponentName)) return true;
         }
         return false;
     }
@@ -209,7 +207,6 @@ public class MainActivity extends AppCompatActivity implements WebServer.Command
         isUpdatingSpinners = true;
         int vRes = PhotoSettings.getVideoResolution(this);
         int pRes = PhotoSettings.getResolution(this);
-
         int vIndex = 3;
         if (vRes == 0x07) vIndex = 0;
         else if (vRes == 0x08) vIndex = 1;
@@ -248,7 +245,7 @@ public class MainActivity extends AppCompatActivity implements WebServer.Command
             ActivityCompat.requestPermissions(this, missing.toArray(new String[0]), REQ_PERMISSIONS);
             return;
         }
-        bootRetryCount = 0; // Сбрасываем счетчик при ручном запуске
+        bootRetryCount = 0;
         startStreaming();
     }
 
@@ -272,13 +269,11 @@ public class MainActivity extends AppCompatActivity implements WebServer.Command
 
     private void startStreaming() {
         if (streaming || isConnecting) return;
-
         if (webRtc == null) {
             setStatus("Инициализация WebRTC...");
             retryHandler.postDelayed(this::startStreaming, 1000);
             return;
         }
-
         captureSurface = webRtc.getCaptureSurface();
         if (captureSurface == null) {
             setStatus("Ожидание Surface...");
@@ -288,7 +283,6 @@ public class MainActivity extends AppCompatActivity implements WebServer.Command
 
         UsbManager mgr = (UsbManager) getSystemService(USB_SERVICE);
         UsbDevice cam = findCamera(mgr);
-
         if (cam == null) {
             handleStreamFailure("USB камера не найдена");
             return;
@@ -297,11 +291,9 @@ public class MainActivity extends AppCompatActivity implements WebServer.Command
         isConnecting = true;
         streaming = true;
         getSharedPreferences(PREF, MODE_PRIVATE).edit().putBoolean(KEY_STREAM_ACTIVE, true).apply();
-
         btnStart.setEnabled(false);
         btnStop.setEnabled(true);
 
-        // ★ Запускаем таймаут: если через 15 секунд не подключились - это ошибка
         connectTimeoutRunnable = () -> {
             if (isConnecting) {
                 Log.w(TAG, "Connection timeout!");
@@ -315,15 +307,11 @@ public class MainActivity extends AppCompatActivity implements WebServer.Command
 
         usb = new UsbCameraManager(this);
         usb.start(new UsbCameraManager.Listener() {
-            @Override public void onPermissionRequested() {
-                setStatus("⚠ Ожидание разрешения USB...");
-            }
+            @Override public void onPermissionRequested() { setStatus("⚠ Ожидание разрешения USB..."); }
 
             @Override
             public void onConnected(UsbDeviceConnection conn, UsbInterface intf, UsbEndpoint epIn, UsbEndpoint epOut) {
                 if (!streaming) return;
-
-                // Отменяем таймаут, так как камера ответила
                 if (connectTimeoutRunnable != null) retryHandler.removeCallbacks(connectTimeoutRunnable);
 
                 try {
@@ -349,7 +337,6 @@ public class MainActivity extends AppCompatActivity implements WebServer.Command
                         if (!ok) {
                             handleStreamFailure("Сессия LiveView не запустилась");
                         } else {
-                            // ★ УСПЕХ! Сбрасываем счетчик попыток
                             bootRetryCount = 0;
                             isConnecting = false;
                             setStatus("🔴 Стрим активен");
@@ -359,29 +346,15 @@ public class MainActivity extends AppCompatActivity implements WebServer.Command
                 }, "LV-start").start();
             }
 
-            @Override public void onDetached() {
-                handleStreamFailure("Камера отключена");
-            }
-
-            @Override public void onPermissionDenied() {
-                handleStreamFailure("USB-разрешение отклонено");
-            }
-
-            @Override public void onError(String msg) {
-                handleStreamFailure("USB ошибка: " + msg);
-            }
+            @Override public void onDetached() { handleStreamFailure("Камера отключена"); }
+            @Override public void onPermissionDenied() { handleStreamFailure("USB-разрешение отклонено"); }
+            @Override public void onError(String msg) { handleStreamFailure("USB ошибка: " + msg); }
         });
     }
 
-    /**
-     * ★ Централизованный обработчик ошибок запуска с логикой повторных попыток
-     */
     private void handleStreamFailure(String reason) {
         Log.e(TAG, "Stream failure: " + reason);
-
-        // Очищаем ресурсы (камеру, декодер, сессию)
         cleanupResources();
-
         boolean wasActive = getSharedPreferences(PREF, MODE_PRIVATE).getBoolean(KEY_STREAM_ACTIVE, false);
 
         if (wasActive) {
@@ -389,13 +362,11 @@ public class MainActivity extends AppCompatActivity implements WebServer.Command
                 bootRetryCount++;
                 int attempt = bootRetryCount;
                 setStatus("Ошибка: " + reason + "\nПовторная попытка " + attempt + "/" + MAX_BOOT_RETRIES + " через 10 сек...");
-
                 if (retryRunnable != null) retryHandler.removeCallbacks(retryRunnable);
                 retryRunnable = () -> { retryRunnable = null; startStreaming(); };
                 retryHandler.postDelayed(retryRunnable, RETRY_DELAY_MS);
             } else {
                 setStatus("Не удалось запустить трансляцию после " + MAX_BOOT_RETRIES + " попыток.");
-                // Отключаем автозапуск, чтобы не было бесконечного цикла
                 getSharedPreferences(PREF, MODE_PRIVATE).edit().putBoolean(KEY_STREAM_ACTIVE, false).apply();
             }
         } else {
@@ -406,16 +377,12 @@ public class MainActivity extends AppCompatActivity implements WebServer.Command
 
     private void cleanupResources() {
         if (connectTimeoutRunnable != null) retryHandler.removeCallbacks(connectTimeoutRunnable);
-
         LiveViewSession s = session; session = null;
         if (s != null) { try { s.stop(); } catch (Exception ignored) {} }
-
         UsbCameraManager u = usb; usb = null;
         if (u != null) { try { u.stop(); } catch (Exception ignored) {} }
-
         H264Decoder d = decoder; decoder = null;
         if (d != null) { try { d.stop(); } catch (Exception ignored) {} }
-
         streaming = false;
         isConnecting = false;
         btnStart.setEnabled(true);
@@ -424,20 +391,16 @@ public class MainActivity extends AppCompatActivity implements WebServer.Command
 
     private void stopStreaming(boolean userStopped) {
         if (userStopped) {
-            // ★ Пользователь явно нажал "Остановить" - убиваем все таймеры
             if (retryRunnable != null) retryHandler.removeCallbacks(retryRunnable);
             bootRetryCount = 0;
             getSharedPreferences(PREF, MODE_PRIVATE).edit().putBoolean(KEY_STREAM_ACTIVE, false).apply();
             setStatus("Готов. Нажмите «Запустить стрим»");
         }
-
         cleanupResources();
         updateIpInfo();
     }
 
-    private void setStatus(String text) {
-        runOnUiThread(() -> tvStatus.setText(text));
-    }
+    private void setStatus(String text) { runOnUiThread(() -> tvStatus.setText(text)); }
 
     private void updateIpInfo() {
         runOnUiThread(() -> {
@@ -452,10 +415,7 @@ public class MainActivity extends AppCompatActivity implements WebServer.Command
         });
     }
 
-    private void openAndroidSettings() {
-        try { startActivity(new Intent(android.provider.Settings.ACTION_SETTINGS)); } catch (Exception ignored) {}
-    }
-
+    private void openAndroidSettings() { try { startActivity(new Intent(android.provider.Settings.ACTION_SETTINGS)); } catch (Exception ignored) {} }
     private void openHomeSettings() {
         try { startActivity(new Intent("android.settings.HOME_SETTINGS")); return; } catch (Exception ignored) {}
         try { startActivity(new Intent(android.provider.Settings.ACTION_SETTINGS)); } catch (Exception ignored) {}
@@ -473,6 +433,7 @@ public class MainActivity extends AppCompatActivity implements WebServer.Command
         } catch (Exception ignored) {}
     }
 
+    // ★ ИЗМЕНЕНО: Реализация интерфейса WebServerManager.CommandHandler
     @Override
     public JSONObject handleCommand(String cmd, JSONObject payload) throws Exception {
         JSONObject r = new JSONObject();
@@ -511,10 +472,11 @@ public class MainActivity extends AppCompatActivity implements WebServer.Command
             if (newPort < 1024 || newPort > 65535) { r.put("ok", false); r.put("error", "invalid port"); return r; }
             if (newPort == webPort) { r.put("ok", true); r.put("port", webPort); return r; }
 
-            WebServer newServer = new WebServer(this, newPort, this);
+            // ★ ИЗМЕНЕНО: Используем WebServerManager
+            WebServerManager newServer = new WebServerManager(this, newPort, this);
             if (!newServer.start()) { r.put("ok", false); r.put("error", "port busy"); return r; }
 
-            WebServer oldServer = webServer;
+            WebServerManager oldServer = webServer;
             int oldPort = webPort;
             webServer = newServer;
             webPort = newPort;
@@ -577,9 +539,8 @@ public class MainActivity extends AppCompatActivity implements WebServer.Command
     @Override
     protected void onDestroy() {
         super.onDestroy();
-        // ★ Защита от пересоздания экрана (поворота и т.д.)
         if (!isChangingConfigurations()) {
-            stopStreaming(false); // false - НЕ сбрасываем флаг автозапуска
+            stopStreaming(false);
         }
         if (webServer != null) webServer.stop();
         if (webRtc != null) webRtc.stop();
