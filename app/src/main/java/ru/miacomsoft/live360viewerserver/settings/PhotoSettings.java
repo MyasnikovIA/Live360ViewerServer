@@ -32,15 +32,37 @@ public final class PhotoSettings {
 
     public static final String KEY_VIDEO_RES = "video_res";
 
-    private static final int[] ALL = { RES_5MP, RES_13MP };
-    private static final int[] ALL_VIDEO = {
-            VIDEO_RES_640x320, VIDEO_RES_960x480, VIDEO_RES_1024x512,
-            VIDEO_RES_1280x640, VIDEO_RES_1920x960
-    };
+    // ★★★ Профили камеры для WebRTC-трансляции ★★★
+    //
+    // Механизм трансляции ОДИН — WebRTC (MainActivity.startStreaming).
+    // Профиль управляет ТОЛЬКО параметрами, отправляемыми камере:
+    //   - SET_ALL_SETTINGS (0x4857): байт [3]=photo_res, байт [4]=video_res,
+    //                                байт [9]=bitrate
+    //   - START_LIVE_VIEW (0x4811): байт [9]=liveMode
+    //
+    // ★ ОПТИМИЗАЦИЯ 1: профили РАЗВЕДЕНЫ по реально влияющим байтам.
+    //   Реально влияет на live-видео только video_res (байт [4]).
+    //   STANDARD: video_res=0x0A (1280×640) — текущее подтверждённое.
+    //   HD:       video_res=0x0B (1920×960) — кандидат; если камера
+    //             не поднимет live-view, заменить на VIDEO_RES_1024x512
+    //             (0x09) или вернуть 0x0A — правится здесь одной строкой.
+    //
+    //   photo_res (0x03/0x04) влияет ТОЛЬКО на JPEG-фото, не на live-видео.
+    //   bitrate (0x08/0x0A) — предположительно, но подтверждённого влияния
+    //   на live-видео нет; если камера игнорирует, оставить как есть.
+    public static final String KEY_STREAM_PROFILE = "stream_profile";
+
+    public static final int PROFILE_STANDARD = 0; // 1280×640, 5 МП, MID
+    public static final int PROFILE_HD       = 1; // 1920×960 (кандидат), 13 МП, HIGH
+    public static final int DEFAULT_STREAM_PROFILE = PROFILE_STANDARD;
+
+    private static final int[] ALL_PROFILES = { PROFILE_STANDARD, PROFILE_HD };
 
     private PhotoSettings() {}
 
-    public static int[] allCodes() { return ALL.clone(); }
+    // ============ photo_res ============
+
+    public static int[] allCodes() { return new int[] { RES_5MP, RES_13MP }; }
 
     public static String label(int code) {
         switch (code) {
@@ -108,9 +130,14 @@ public final class PhotoSettings {
                 .edit().putInt(KEY_VIEW_MODE, mode).apply();
     }
 
-    // ============ video_res (live-stream) ============
+    // ============ video_res ============
 
-    public static int[] allVideoCodes() { return ALL_VIDEO.clone(); }
+    public static int[] allVideoCodes() {
+        return new int[] {
+                VIDEO_RES_640x320, VIDEO_RES_960x480, VIDEO_RES_1024x512,
+                VIDEO_RES_1280x640, VIDEO_RES_1920x960
+        };
+    }
 
     public static String labelVideo(int code) {
         switch (code) {
@@ -124,7 +151,7 @@ public final class PhotoSettings {
     }
 
     public static boolean isValidVideo(int code) {
-        for (int c : ALL_VIDEO) if (c == code) return true;
+        for (int c : allVideoCodes()) if (c == code) return true;
         return false;
     }
 
@@ -144,5 +171,107 @@ public final class PhotoSettings {
         ctx.getApplicationContext()
                 .getSharedPreferences(PREFS, Context.MODE_PRIVATE)
                 .edit().putInt(KEY_VIDEO_RES, code).apply();
+    }
+
+    // ============ Профили камеры (stream profile) ============
+
+    public static int[] allStreamProfiles() { return ALL_PROFILES.clone(); }
+
+    public static String labelStreamProfile(int profile) {
+        switch (profile) {
+            case PROFILE_STANDARD: return "Стандарт (1280×640)";
+            case PROFILE_HD:       return "HD (1920×960)";
+            default:               return "Неизвестный профиль";
+        }
+    }
+
+    public static boolean isValidStreamProfile(int profile) {
+        return profile == PROFILE_STANDARD || profile == PROFILE_HD;
+    }
+
+    public static int getStreamProfile(Context ctx) {
+        int saved = ctx.getApplicationContext()
+                .getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .getInt(KEY_STREAM_PROFILE, DEFAULT_STREAM_PROFILE);
+        if (!isValidStreamProfile(saved)) {
+            saved = DEFAULT_STREAM_PROFILE;
+            setStreamProfile(ctx, saved);
+        }
+        return saved;
+    }
+
+    public static void setStreamProfile(Context ctx, int profile) {
+        if (!isValidStreamProfile(profile)) profile = DEFAULT_STREAM_PROFILE;
+        ctx.getApplicationContext()
+                .getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .edit().putInt(KEY_STREAM_PROFILE, profile).apply();
+    }
+
+    // ----- Параметры профилей -----
+
+    public static int profilePhotoRes(int profile) {
+        switch (profile) {
+            case PROFILE_HD: return RES_13MP;                // 13 МП JPEG
+            case PROFILE_STANDARD:
+            default:         return RES_5MP;                 // 5 МП JPEG
+        }
+    }
+
+    public static int profileVideoRes(int profile) {
+        switch (profile) {
+            case PROFILE_HD: return VIDEO_RES_1920x960;      // ★ 0x0B — кандидат
+            case PROFILE_STANDARD:
+            default:         return VIDEO_RES_1280x640;      // ★ 0x0A — подтверждено
+        }
+    }
+
+    /** Байт [9] в SET_ALL_SETTINGS (0x4857). */
+    public static int profileBitrate(int profile) {
+        switch (profile) {
+            case PROFILE_HD: return 0x0A;                    // HIGH
+            case PROFILE_STANDARD:
+            default:         return 0x08;                    // MID
+        }
+    }
+
+    /** Байт [9] в START_LIVE_VIEW (0x4811). */
+    public static int profileLiveMode(int profile) {
+        switch (profile) {
+            case PROFILE_HD:
+            case PROFILE_STANDARD:
+            default:         return 0x0A;
+        }
+    }
+
+    // ----- ★ ОПТИМИЗАЦИЯ 3: хелперы размеров для SurfaceTexture / WebRTC -----
+
+    public static int videoResWidth(int videoResCode) {
+        switch (videoResCode) {
+            case VIDEO_RES_640x320:  return 640;
+            case VIDEO_RES_960x480:  return 960;
+            case VIDEO_RES_1024x512: return 1024;
+            case VIDEO_RES_1280x640: return 1280;
+            case VIDEO_RES_1920x960: return 1920;
+            default:                 return 1280;
+        }
+    }
+
+    public static int videoResHeight(int videoResCode) {
+        switch (videoResCode) {
+            case VIDEO_RES_640x320:  return 320;
+            case VIDEO_RES_960x480:  return 480;
+            case VIDEO_RES_1024x512: return 512;
+            case VIDEO_RES_1280x640: return 640;
+            case VIDEO_RES_1920x960: return 960;
+            default:                 return 640;
+        }
+    }
+
+    public static int profileVideoWidth(int profile) {
+        return videoResWidth(profileVideoRes(profile));
+    }
+
+    public static int profileVideoHeight(int profile) {
+        return videoResHeight(profileVideoRes(profile));
     }
 }

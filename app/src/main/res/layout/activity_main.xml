@@ -2,7 +2,7 @@
 <ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="@color/black">
+    android:fillViewport="true">
 
     <LinearLayout
         android:layout_width="match_parent"
@@ -14,94 +14,46 @@
             android:id="@+id/tvStatus"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="Инициализация…"
-            android:textColor="@color/white"
-            android:textSize="18sp"
-            android:paddingBottom="12dp"/>
+            android:text="Готов. Нажмите «Запустить стрим»"
+            android:textStyle="bold"
+            android:textSize="16sp"
+            android:paddingBottom="8dp" />
 
-        <Button
-            android:id="@+id/btnStart"
+        <TextView
+            android:id="@+id/tvInfo"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="▶ ЗАПУСТИТЬ СТРИМ"/>
+            android:text="Web-панель: http://?/"
+            android:fontFamily="monospace"
+            android:textSize="11sp"
+            android:paddingBottom="8dp" />
 
-        <Button
-            android:id="@+id/btnStop"
+        <!-- ★ Профиль камеры: влияет ТОЛЬКО на параметры SET_ALL_SETTINGS / START_LIVE_VIEW,
+             отправляемые камере перед стартом. Механизм трансляции — всегда WebRTC. -->
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Профиль камеры:"
+            android:textStyle="bold"
+            android:paddingTop="4dp" />
+
+        <Spinner
+            android:id="@+id/spinnerStreamProfile"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:text="■ ОСТАНОВИТЬ"/>
+            android:layout_marginBottom="12dp" />
 
-        <!-- Выбор разрешений -->
+        <!-- Web-порт -->
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="HTTP-порт (Web-панель):" />
+
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:orientation="horizontal"
-            android:layout_marginTop="16dp"
-            android:gravity="center_vertical">
-
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="Video: "
-                android:textColor="@color/white"
-                android:layout_marginEnd="8dp"/>
-
-            <Spinner
-                android:id="@+id/spinnerVideo"
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:background="#333"
-                android:padding="8dp"/>
-        </LinearLayout>
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="horizontal"
-            android:layout_marginTop="8dp"
-            android:gravity="center_vertical">
-
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="Photo: "
-                android:textColor="@color/white"
-                android:layout_marginEnd="8dp"/>
-
-            <Spinner
-                android:id="@+id/spinnerPhoto"
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:background="#333"
-                android:padding="8dp"/>
-        </LinearLayout>
-
-        <Button
-            android:id="@+id/btnSettings"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="16dp"
-            android:text="⚙ НАСТРОЙКИ ANDROID"/>
-
-        <Button
-            android:id="@+id/btnLauncher"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:text="🏠 СДЕЛАТЬ ЛАУНЧЕРОМ (HOME)"/>
-        <Button
-            android:id="@+id/btnAccessibility"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:text="🤖 Включить авто-подтверждение USB"/>
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="16dp"
-            android:orientation="horizontal">
+            android:layout_marginBottom="8dp">
 
             <EditText
                 android:id="@+id/etPort"
@@ -109,26 +61,83 @@
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
                 android:inputType="number"
-                android:text="8080"
-                android:textColor="@color/white"
-                android:background="#333"
-                android:padding="10dp"/>
+                android:hint="8080"
+                android:fontFamily="monospace"/>
 
             <Button
                 android:id="@+id/btnApplyPort"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:layout_marginStart="8dp"
-                android:text="ПРИМЕНИТЬ"/>
+                android:text="Применить"/>
         </LinearLayout>
 
+        <!-- Photo resolution (JPEG) -->
         <TextView
-            android:id="@+id/tvInfo"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Photo resolution (JPEG):" />
+
+        <Spinner
+            android:id="@+id/spinnerPhoto"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="20dp"
-            android:textColor="#00FF00"
-            android:fontFamily="monospace"
-            android:textSize="12sp"/>
+            android:layout_marginBottom="8dp" />
+
+        <!-- Video resolution (live H.264 stream) -->
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Video resolution (live stream):" />
+
+        <Spinner
+            android:id="@+id/spinnerVideo"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="16dp" />
+
+        <!-- Основная кнопка — ВСЕГДА WebRTC -->
+        <Button
+            android:id="@+id/btnStart"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="▶ ЗАПУСТИТЬ СТРИМ (WebRTC)"
+            android:textStyle="bold" />
+
+        <!-- Необязательная отдельная опция локального предпросмотра (не влияет на трансляцию) -->
+        <Button
+            android:id="@+id/btnStartFlat"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:text="Локальный просмотр FLAT 360×180" />
+
+        <Button
+            android:id="@+id/btnStop"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:text="■ Стоп" />
+
+        <Button
+            android:id="@+id/btnSettings"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:text="Настройки Android" />
+
+        <Button
+            android:id="@+id/btnLauncher"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Настройки Launcher (HOME)" />
+
+        <Button
+            android:id="@+id/btnAccessibility"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:text="⚠️ ВКЛЮЧИТЕ АВТО-ПОДТВЕРЖДЕНИЕ USB" />
+
     </LinearLayout>
 </ScrollView>

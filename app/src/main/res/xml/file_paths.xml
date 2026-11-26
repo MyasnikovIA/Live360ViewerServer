@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!-- Путь соответствует savePhotoLegacy() в ViewerActivity:
+             new File(Environment.getExternalStoragePublicDirectory(
+                     Environment.DIRECTORY_PICTURES), PHOTO_SUBDIR)
+         где PHOTO_SUBDIR = "Live360Viewer".
+         Если PHOTO_SUBDIR изменён — поправьте path ниже. -->
+    <external-path
+        name="live360_pictures"
+        path="DCIM/Live360Viewer/"/>
+</paths>

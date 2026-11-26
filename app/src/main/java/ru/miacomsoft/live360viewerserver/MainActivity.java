@@ -46,7 +46,6 @@ import ru.miacomsoft.live360viewerserver.settings.PhotoSettings;
 import ru.miacomsoft.live360viewerserver.usb.LiveViewSession;
 import ru.miacomsoft.live360viewerserver.usb.ScsiConstants;
 import ru.miacomsoft.live360viewerserver.usb.UsbCameraManager;
-// ★ ИЗМЕНЕНО: Используем новый WebServerManager
 import ru.miacomsoft.live360viewerserver.web.WebServerManager;
 import ru.miacomsoft.live360viewerserver.webrtc.WebRtcServer;
 
@@ -60,6 +59,7 @@ public class MainActivity extends AppCompatActivity implements WebServerManager.
     private static final int MAX_BOOT_RETRIES = 3;
     private static final long RETRY_DELAY_MS = 10000L;
     private static final long CONNECT_TIMEOUT_MS = 15000L;
+    private static final long PROFILE_RESTART_DELAY_MS = 1000L;
 
     private static final String PREF = "app_prefs";
     private static final String KEY_WEB_PORT   = "web_port";
@@ -67,11 +67,14 @@ public class MainActivity extends AppCompatActivity implements WebServerManager.
 
     private TextView tvStatus, tvInfo;
     private Button btnStart, btnStop, btnSettings, btnLauncher, btnApplyPort, btnAccessibility;
+    private Button btnStartFlat;
+
     private EditText etPort;
     private Spinner spinnerVideo, spinnerPhoto;
+    private Spinner spinnerStreamProfile;
 
     private WebRtcServer webRtc;
-    private WebServerManager webServer; // ★ ИЗМЕНЕНО
+    private WebServerManager webServer;
     private UsbCameraManager usb;
     private LiveViewSession  session;
     private H264Decoder      decoder;
@@ -82,12 +85,18 @@ public class MainActivity extends AppCompatActivity implements WebServerManager.
     private volatile int     webPort   = DEFAULT_WEB_PORT;
     private String localIp = "?";
 
+    // ★ Применённый профиль/размеры — для onProfileChanged
+    private volatile int appliedProfile = -1;
+    private volatile int appliedVideoWidth = -1;
+    private volatile int appliedVideoHeight = -1;
+
     private boolean isUpdatingSpinners = false;
 
     private int bootRetryCount = 0;
     private final Handler retryHandler = new Handler(Looper.getMainLooper());
     private Runnable retryRunnable;
     private Runnable connectTimeoutRunnable;
+    private Runnable pendingProfileRestart = null;
 
     private static final String[] REQUIRED_PERMISSIONS = Build.VERSION.SDK_INT >= 29
             ? new String[]{ Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO }
@@ -110,8 +119,15 @@ public class MainActivity extends AppCompatActivity implements WebServerManager.
         btnAccessibility = findViewById(R.id.btnAccessibility);
         spinnerVideo = findViewById(R.id.spinnerVideo);
         spinnerPhoto = findViewById(R.id.spinnerPhoto);
+        spinnerStreamProfile = findViewById(R.id.spinnerStreamProfile);
+        btnStartFlat = findViewById(R.id.btnStartFlat);
 
         btnStart.setOnClickListener(v -> requestPermissionsAndStart());
+
+        btnStartFlat.setOnClickListener(v -> {
+            startActivity(new Intent(this, FlatViewerActivity.class));
+        });
+
         btnStop.setOnClickListener(v -> stopStreaming(true));
         btnSettings.setOnClickListener(v -> openAndroidSettings());
         btnLauncher.setOnClickListener(v -> openHomeSettings());
@@ -127,6 +143,7 @@ public class MainActivity extends AppCompatActivity implements WebServerManager.
         });
 
         btnStop.setEnabled(false);
+        setupStreamProfileSpinner();
         setupSpinners();
 
         int saved = getSharedPreferences(PREF, MODE_PRIVATE).getInt(KEY_WEB_PORT, DEFAULT_WEB_PORT);
@@ -138,7 +155,6 @@ public class MainActivity extends AppCompatActivity implements WebServerManager.
             localIp = fetchLocalIp();
             runOnUiThread(MainActivity.this::updateIpInfo);
 
-            // ★ ИЗМЕНЕНО: Используем WebServerManager
             webServer = new WebServerManager(MainActivity.this, webPort, MainActivity.this);
             if (!webServer.start()) {
                 runOnUiThread(() -> {
@@ -154,7 +170,9 @@ public class MainActivity extends AppCompatActivity implements WebServerManager.
 
         boolean wasActive = getSharedPreferences(PREF, MODE_PRIVATE).getBoolean(KEY_STREAM_ACTIVE, false);
         if (wasActive) {
-            Log.i(TAG, "Auto-start: resuming stream...");
+            int profile = PhotoSettings.getStreamProfile(this);
+            Log.i(TAG, "Auto-start: resuming WebRTC, profile="
+                    + PhotoSettings.labelStreamProfile(profile));
             if (hasAllPermissions()) {
                 tvStatus.postDelayed(this::startStreaming, 2000);
             } else {
@@ -162,8 +180,6 @@ public class MainActivity extends AppCompatActivity implements WebServerManager.
             }
         }
     }
-
-    // ... (Остальные методы остаются без изменений вплоть до changeWebPort) ...
 
     @Override
     protected void onResume() {
@@ -192,6 +208,73 @@ public class MainActivity extends AppCompatActivity implements WebServerManager.
             btnAccessibility.setBackgroundColor(Color.parseColor("#F44336"));
         }
     }
+
+    // ============ Профиль камеры ============
+
+    private void setupStreamProfileSpinner() {
+        final int[] profiles = PhotoSettings.allStreamProfiles();
+        String[] labels = new String[profiles.length];
+        for (int i = 0; i < profiles.length; i++) {
+            labels[i] = PhotoSettings.labelStreamProfile(profiles[i]);
+        }
+
+        ArrayAdapter<String> adapter = new ArrayAdapter<>(this,
+                android.R.layout.simple_spinner_item, labels);
+        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        spinnerStreamProfile.setAdapter(adapter);
+
+        int saved = PhotoSettings.getStreamProfile(this);
+        for (int i = 0; i < profiles.length; i++) {
+            if (profiles[i] == saved) { spinnerStreamProfile.setSelection(i); break; }
+        }
+
+        spinnerStreamProfile.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+            @Override public void onItemSelected(AdapterView<?> parent, View view, int pos, long id) {
+                if (isUpdatingSpinners) return;
+                int newProfile = profiles[pos];
+                int oldProfile = PhotoSettings.getStreamProfile(MainActivity.this);
+                if (newProfile == oldProfile) return;
+                PhotoSettings.setStreamProfile(MainActivity.this, newProfile);
+                Log.i(TAG, "stream profile → " + PhotoSettings.labelStreamProfile(newProfile));
+                onProfileChanged(newProfile);
+            }
+            @Override public void onNothingSelected(AdapterView<?> parent) {}
+        });
+    }
+
+    /**
+     * ★ ОПТИМИЗАЦИЯ: смена профиля во время активной трансляции
+     *   → полный перезапуск потока с новыми параметрами камеры и новыми размерами
+     *   SurfaceTexture. KEY_STREAM_ACTIVE НЕ сбрасывается (трансляция
+     *   логически продолжается).
+     */
+    private void onProfileChanged(final int newProfile) {
+        if (!streaming && !isConnecting) {
+            Log.i(TAG, "onProfileChanged: not streaming, profile saved only");
+            return;
+        }
+        Log.i(TAG, "onProfileChanged: restarting stream with profile="
+                + PhotoSettings.labelStreamProfile(newProfile));
+
+        if (pendingProfileRestart != null) {
+            retryHandler.removeCallbacks(pendingProfileRestart);
+            pendingProfileRestart = null;
+        }
+
+        setStatus("Смена профиля: "
+                + PhotoSettings.labelStreamProfile(newProfile) + "…");
+        // Останавливаем текущий поток, но флаг KEY_STREAM_ACTIVE оставляем
+        stopStreaming(false);
+
+        pendingProfileRestart = () -> {
+            pendingProfileRestart = null;
+            Log.i(TAG, "onProfileChanged: start with new profile");
+            requestPermissionsAndStart();
+        };
+        retryHandler.postDelayed(pendingProfileRestart, PROFILE_RESTART_DELAY_MS);
+    }
+
+    // ============ Остальные спиннеры ============
 
     private void setupSpinners() {
         ArrayAdapter<CharSequence> videoAdapter = ArrayAdapter.createFromResource(this,
@@ -267,6 +350,8 @@ public class MainActivity extends AppCompatActivity implements WebServerManager.
         if (wasActive || all) startStreaming();
     }
 
+    // ============ WebRTC-старт (единый механизм) ============
+
     private void startStreaming() {
         if (streaming || isConnecting) return;
         if (webRtc == null) {
@@ -274,12 +359,33 @@ public class MainActivity extends AppCompatActivity implements WebServerManager.
             retryHandler.postDelayed(this::startStreaming, 1000);
             return;
         }
+
+        // ★ ОПТИМИЗАЦИЯ 3 (WebRTC): берём размеры из профиля и передаём их
+        //   в SurfaceTextureCapturer ДО старта H264Decoder. Это гарантирует,
+        //   что кадр 1920×960 (HD) не будет обрезан/растянут.
+        final int profile  = PhotoSettings.getStreamProfile(this);
+        final int photoRes = PhotoSettings.profilePhotoRes(profile);
+        final int videoRes = PhotoSettings.profileVideoRes(profile);
+        final int bitrate  = PhotoSettings.profileBitrate(profile);
+        final int liveMode = PhotoSettings.profileLiveMode(profile);
+        final int vw       = PhotoSettings.profileVideoWidth(profile);
+        final int vh       = PhotoSettings.profileVideoHeight(profile);
+
         captureSurface = webRtc.getCaptureSurface();
         if (captureSurface == null) {
             setStatus("Ожидание Surface...");
             retryHandler.postDelayed(this::startStreaming, 1000);
             return;
         }
+
+        // Меняем размеры SurfaceTexture / VideoSource под профиль
+        webRtc.updateVideoResolution(vw, vh);
+        Log.i(TAG, "startStreaming: profile=" + PhotoSettings.labelStreamProfile(profile)
+                + " photoRes=0x" + Integer.toHexString(photoRes)
+                + " videoRes=0x" + Integer.toHexString(videoRes)
+                + " bitrate=0x" + Integer.toHexString(bitrate)
+                + " liveMode=0x" + Integer.toHexString(liveMode)
+                + " size=" + vw + "x" + vh);
 
         UsbManager mgr = (UsbManager) getSystemService(USB_SERVICE);
         UsbDevice cam = findCamera(mgr);
@@ -290,6 +396,9 @@ public class MainActivity extends AppCompatActivity implements WebServerManager.
 
         isConnecting = true;
         streaming = true;
+        appliedProfile = profile;
+        appliedVideoWidth = vw;
+        appliedVideoHeight = vh;
         getSharedPreferences(PREF, MODE_PRIVATE).edit().putBoolean(KEY_STREAM_ACTIVE, true).apply();
         btnStart.setEnabled(false);
         btnStop.setEnabled(true);
@@ -302,9 +411,6 @@ public class MainActivity extends AppCompatActivity implements WebServerManager.
         };
         retryHandler.postDelayed(connectTimeoutRunnable, CONNECT_TIMEOUT_MS);
 
-        final int photoRes = PhotoSettings.getResolution(this);
-        final int videoRes = PhotoSettings.getVideoResolution(this);
-
         usb = new UsbCameraManager(this);
         usb.start(new UsbCameraManager.Listener() {
             @Override public void onPermissionRequested() { setStatus("⚠ Ожидание разрешения USB..."); }
@@ -315,14 +421,17 @@ public class MainActivity extends AppCompatActivity implements WebServerManager.
                 if (connectTimeoutRunnable != null) retryHandler.removeCallbacks(connectTimeoutRunnable);
 
                 try {
-                    decoder = new H264Decoder(captureSurface, 1280, 640);
+                    // ★ H264Decoder создаётся с размерами профиля (не 1280×640)
+                    decoder = new H264Decoder(captureSurface, vw, vh);
                     decoder.start();
                 } catch (IOException e) {
                     handleStreamFailure("Ошибка декодера: " + e.getMessage());
                     return;
                 }
 
-                session = new LiveViewSession(conn, epIn, epOut, photoRes, videoRes,
+                // ★ Новый конструктор с bitrate/liveMode
+                session = new LiveViewSession(conn, epIn, epOut,
+                        photoRes, videoRes, bitrate, liveMode,
                         new LiveViewSession.FrameListener() {
                             @Override public void onVideoFrame(byte[] h264, long ptsUs) {
                                 H264Decoder d = decoder;
@@ -339,7 +448,9 @@ public class MainActivity extends AppCompatActivity implements WebServerManager.
                         } else {
                             bootRetryCount = 0;
                             isConnecting = false;
-                            setStatus("🔴 Стрим активен");
+                            setStatus("🔴 Стрим активен (WebRTC, "
+                                    + PhotoSettings.labelStreamProfile(profile)
+                                    + ", " + vw + "×" + vh + ")");
                             updateIpInfo();
                         }
                     });
@@ -385,6 +496,9 @@ public class MainActivity extends AppCompatActivity implements WebServerManager.
         if (d != null) { try { d.stop(); } catch (Exception ignored) {} }
         streaming = false;
         isConnecting = false;
+        appliedProfile = -1;
+        appliedVideoWidth = -1;
+        appliedVideoHeight = -1;
         btnStart.setEnabled(true);
         btnStop.setEnabled(false);
     }
@@ -392,6 +506,10 @@ public class MainActivity extends AppCompatActivity implements WebServerManager.
     private void stopStreaming(boolean userStopped) {
         if (userStopped) {
             if (retryRunnable != null) retryHandler.removeCallbacks(retryRunnable);
+            if (pendingProfileRestart != null) {
+                retryHandler.removeCallbacks(pendingProfileRestart);
+                pendingProfileRestart = null;
+            }
             bootRetryCount = 0;
             getSharedPreferences(PREF, MODE_PRIVATE).edit().putBoolean(KEY_STREAM_ACTIVE, false).apply();
             setStatus("Готов. Нажмите «Запустить стрим»");
@@ -433,7 +551,6 @@ public class MainActivity extends AppCompatActivity implements WebServerManager.
         } catch (Exception ignored) {}
     }
 
-    // ★ ИЗМЕНЕНО: Реализация интерфейса WebServerManager.CommandHandler
     @Override
     public JSONObject handleCommand(String cmd, JSONObject payload) throws Exception {
         JSONObject r = new JSONObject();
@@ -472,7 +589,6 @@ public class MainActivity extends AppCompatActivity implements WebServerManager.
             if (newPort < 1024 || newPort > 65535) { r.put("ok", false); r.put("error", "invalid port"); return r; }
             if (newPort == webPort) { r.put("ok", true); r.put("port", webPort); return r; }
 
-            // ★ ИЗМЕНЕНО: Используем WebServerManager
             WebServerManager newServer = new WebServerManager(this, newPort, this);
             if (!newServer.start()) { r.put("ok", false); r.put("error", "port busy"); return r; }
 
@@ -504,12 +620,20 @@ public class MainActivity extends AppCompatActivity implements WebServerManager.
     public JSONObject getStatus() {
         JSONObject s = new JSONObject();
         try {
+            int profile = PhotoSettings.getStreamProfile(this);
             s.put("streaming", streaming);
             s.put("signalingPort", SIGNALING_PORT);
             s.put("webPort", webPort);
             s.put("ip", localIp);
             s.put("videoRes", PhotoSettings.getVideoResolution(this));
             s.put("photoRes", PhotoSettings.getResolution(this));
+            s.put("streamProfile", profile);
+            s.put("streamProfileLabel", PhotoSettings.labelStreamProfile(profile));
+            s.put("appliedProfile", appliedProfile);
+            s.put("appliedProfileLabel",
+                    appliedProfile >= 0 ? PhotoSettings.labelStreamProfile(appliedProfile) : "—");
+            s.put("appliedVideoWidth", appliedVideoWidth);
+            s.put("appliedVideoHeight", appliedVideoHeight);
             s.put("autoStart", getSharedPreferences(PREF, MODE_PRIVATE).getBoolean(KEY_STREAM_ACTIVE, false));
             s.put("retryCount", bootRetryCount);
         } catch (Exception ignored) {}
